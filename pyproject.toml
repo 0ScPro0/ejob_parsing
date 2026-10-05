@@ -1,24 +1,79 @@
 [project]
 name = "ejob-parsing"
 version = "0.1.0"
-description = "Add your description here"
+description = "Парсер вакансий и резюме hh.ru (vacancies / keywords / resumes)"
 readme = "README.md"
 authors = [
     { name = "ScPro", email = "muhamadievbogdan@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "curl-cffi>=0.16.3",
-    "loguru>=0.7.3",
+    # --- MVP-стек (раздел 2.6 ТЗ) ---
+    "curl-cffi>=0.16.3",        # HTTP-клиент с имитацией TLS Chrome (R-1)
+    "selectolax>=1.0.0",        # быстрый HTML-парсер
+    "orjson>=3.10.7",           # быстрый JSON
+    "razdel>=0.5.0",            # токенизация русского текста (последняя версия на PyPI)
+    "pymorphy3>=2.0.1",         # лемматизация русского текста
+    "loguru>=0.7.3",            # логирование с ротацией
+    "typer>=0.27.2",            # CLI
+    # --- Конфиги и утилиты ---
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
-    "selectolax>=1.0.0",
-    "typer>=0.27.2",
+    "tenacity>=9.0.0",          # ретраи при сетевых ошибках (F-1.8)
+    "fake-useragent>=2.0.0",    # ротация User-Agent (опционально)
+]
+
+[project.optional-dependencies]
+# Модуль резюме (этап 4): стелс-браузер. Не входит в базовый uv sync.
+resumes = [
+    "playwright>=1.50.0",
+    "patchright>=1.50.0",
+]
+# Разработка и качество (NF-3..NF-7)
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "respx>=0.21.1",            # моки HTTP для тестов
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+    "pre-commit>=4.0.0",
 ]
 
 [project.scripts]
-ejob-parsing = "ejob_parsing:main"
+ejob-parsing = "ejob_parsing.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
+
+# ── Инструменты качества ─────────────────────────────────────
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "selectolax.*",
+    "curl_cffi.*",
+    "razdel.*",
+    "pymorphy3.*",
+    "fake_useragent.*",
+    "playwright.*",
+    "patchright.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
