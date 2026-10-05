@@ -1,0 +1,58 @@
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# ── Virtual environments ──────────────────────────────────
+.venv/
+env/
+ENV/
+
+# ── uv ────────────────────────────────────────────────────
+.uv/
+
+# ── Build artifacts ───────────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+*.whl
+
+# ── Tool caches ───────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ── Environment variables ─────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Parsing output (data) ─────────────────────────────────
+output/
+data/
+results/
+exports/
+
+# ── IDE ────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

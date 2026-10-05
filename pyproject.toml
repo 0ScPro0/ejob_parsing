@@ -1,0 +1,24 @@
+[project]
+name = "ejob-parsing"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ScPro", email = "muhamadievbogdan@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "curl-cffi>=0.16.3",
+    "loguru>=0.7.3",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "selectolax>=1.0.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+ejob-parsing = "ejob_parsing:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
