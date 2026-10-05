@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from ejob-parsing!")
+"""Парсер вакансий и резюме hh.ru."""
+
+__version__ = "0.1.0"
