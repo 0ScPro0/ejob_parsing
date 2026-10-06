@@ -1,8 +1,9 @@
-"""Тесты модуля вакансий: список (DOM-карточки), страница вакансии (JSON-LD)
-и параллельные фазы сбора (_collect_links, _fetch_vacancy)."""
+"""Тесты модуля вакансий: список (DOM-карточки), страница вакансии (JSON-LD),
+параллельные фазы сбора и метки страниц (searchQuery/searchPage)."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,6 +13,9 @@ from ejob_parsing.parsers.vacancies import (
     SEARCH_URL,
     _collect_links,
     _fetch_vacancy,
+    _last_pages,
+    _read_progress,
+    _write_progress,
     build_search_queries,
     extract_initial_state,
     extract_vacancy_links,
@@ -21,6 +25,7 @@ from ejob_parsing.parsers.vacancies import (
     parse_search_cards,
     parse_vacancy_page,
 )
+from ejob_parsing.storage import append_jsonl
 from tests._settings import make_settings
 
 SEARCH_HTML = """
@@ -227,12 +232,21 @@ class _FakeResponse:
 
 
 class _FakeClient:
-    """Подмена HttpClient: список -> SEARCH_HTML, вакансия -> VACANCY_HTML."""
+    """Подмена HttpClient: список -> SEARCH_HTML, вакансия -> VACANCY_HTML.
+
+    Запоминает вызовы get (URL + params), чтобы тесты могли проверить,
+    с какой страницы началась пагинация.
+    """
+
+    instances: list[_FakeClient] = []
 
     def __init__(self, settings: Any = None, *, impersonate: str = "chrome") -> None:
         self.settings = settings
+        self.calls: list[tuple[str, dict[str, Any] | None]] = []
+        _FakeClient.instances.append(self)
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+        self.calls.append((url, params))
         if url == SEARCH_URL:
             return _FakeResponse(SEARCH_HTML)
         return _FakeResponse(VACANCY_HTML)
@@ -248,24 +262,33 @@ class _BrokenClient(_FakeClient):
         raise RuntimeError("network down")
 
 
-def _vacancy_link() -> dict[str, str]:
+def _vacancy_link() -> dict[str, Any]:
     return {
         "vacancyId": "138126305",
         "url": "https://hh.ru/vacancy/138126305",
         "name": "Инженер-программист",
+        "searchQuery": "middle fullstack python",
+        "searchPage": 2,
     }
 
 
 def test_collect_links_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
     """Два запроса обрабатываются воркерами; ссылки собираются в общий список."""
+    _FakeClient.instances.clear()
     monkeypatch.setattr("ejob_parsing.parsers.vacancies.HttpClient", _FakeClient)
     queries = [
         {"text": "middle fullstack python", "experience": "between3And6"},
         {"text": "senior web go", "experience": "between3And6"},
     ]
-    links = _collect_links(make_settings(), queries, pages_limit=1, workers=2)
+    links, progress = _collect_links(make_settings(), queries, pages_limit=1, workers=2)
     assert len(links) == 4  # 2 запроса x 2 карточки со страницы
     assert all(link["vacancyId"].isdigit() for link in links)
+    # каждая ссылка помечена запросом и номером страницы выдачи
+    query_texts = {q["text"] for q in queries}
+    assert all(link["searchQuery"] in query_texts for link in links)
+    assert all(link["searchPage"] == 0 for link in links)
+    # прогресс: по каждому запросу обработана страница 0
+    assert progress == {q["text"]: 0 for q in queries}
 
 
 def test_fetch_vacancy_add(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,6 +299,9 @@ def test_fetch_vacancy_add(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(payload, dict)
     assert payload["vacancyId"] == "138126305"
     assert payload["employer"]["name"] == "ООО Ромашка"
+    # метки страницы попадают в данные для сохранения
+    assert payload["searchQuery"] == "middle fullstack python"
+    assert payload["searchPage"] == 2
 
 
 def test_fetch_vacancy_skip(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,3 +318,81 @@ def test_fetch_vacancy_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
     status, payload = _fetch_vacancy(make_settings(), _vacancy_link(), ["python"])
     assert status == "error"
     assert "network down" in str(payload)
+
+
+def test_last_pages_returns_max_per_query(tmp_path: Path) -> None:
+    """Из записей .jsonl берётся максимальная страница по каждому запросу."""
+    path = tmp_path / "vacancies.jsonl"
+    append_jsonl(
+        path,
+        {"vacancyId": "1", "searchQuery": "middle fullstack python", "searchPage": 2},
+    )
+    append_jsonl(
+        path,
+        {"vacancyId": "2", "searchQuery": "middle fullstack python", "searchPage": 5},
+    )
+    append_jsonl(
+        path,
+        {"vacancyId": "3", "searchQuery": "senior web go", "searchPage": 1},
+    )
+    append_jsonl(path, {"vacancyId": "4"})  # старые записи без меток игнорируются
+    assert _last_pages(path) == {
+        "middle fullstack python": 5,
+        "senior web go": 1,
+    }
+
+
+def test_collect_links_skips_pages_before_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Пагинация начинается с последней обработанной страницы, а не с нуля."""
+    _FakeClient.instances.clear()
+    monkeypatch.setattr("ejob_parsing.parsers.vacancies.HttpClient", _FakeClient)
+    queries = [{"text": "middle fullstack python", "experience": "between3And6"}]
+    links, progress = _collect_links(
+        make_settings(),
+        queries,
+        pages_limit=4,
+        workers=1,
+        start_pages={"middle fullstack python": 2},
+    )
+    requested_pages = [
+        params.get("page") or 0
+        for client in _FakeClient.instances
+        for _, params in client.calls
+        if params is not None
+    ]
+    assert requested_pages == [2, 3]  # страницы 0 и 1 не перезапрашивались
+    assert len(links) == 4  # 2 страницы x 2 карточки
+    assert all(link["searchPage"] in (2, 3) for link in links)
+    # прогресс фиксирует последнюю запрошенную страницу (даже если с неё
+    # ничего бы не сохранилось — дубли/фильтр)
+    assert progress == {"middle fullstack python": 3}
+
+
+def test_progress_roundtrip(tmp_path: Path) -> None:
+    """Прогресс пагинации сохраняется и читается обратно."""
+    path = tmp_path / "vacancies.jsonl.progress.json"
+    _write_progress(
+        path,
+        {
+            "middle fullstack python": 4,
+            "senior web go": 1,
+        },
+    )
+    assert _read_progress(path) == {
+        "middle fullstack python": 4,
+        "senior web go": 1,
+    }
+
+
+def test_read_progress_missing_or_broken(tmp_path: Path) -> None:
+    """Отсутствующий или повреждённый файл прогресса = пустой словарь."""
+    missing = tmp_path / "none.json"
+    assert _read_progress(missing) == {}
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    assert _read_progress(broken) == {}
+    empty = tmp_path / "empty.json"
+    _write_progress(empty, {})  # пустой прогресс не создаёт файл
+    assert not empty.exists()

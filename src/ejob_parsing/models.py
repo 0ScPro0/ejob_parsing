@@ -113,6 +113,19 @@ class Vacancy(BaseModel):
         validation_alias=AliasChoices("responsesCount", "responses_count"),
         serialization_alias="responsesCount",
     )
+    # Текст поискового запроса и номер страницы выдачи, на которых найдена
+    # вакансия. Нужны, чтобы следующий запуск продолжил пагинацию с последней
+    # обработанной страницы и не перезапрашивал уже пройденные.
+    search_query: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("searchQuery", "search_query"),
+        serialization_alias="searchQuery",
+    )
+    search_page: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("searchPage", "search_page"),
+        serialization_alias="searchPage",
+    )
     url: str = ""
 
 
