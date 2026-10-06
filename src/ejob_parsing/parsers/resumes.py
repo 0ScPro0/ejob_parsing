@@ -1,8 +1,8 @@
 """Модуль 3: сбор топовых резюме hh.ru (F-3.1 .. F-3.8).
 
 Использует Playwright/patchright в стелс-режиме. Зависимости входят в
-extra `resumes` ([project.optional-dependencies]), поэтому модуль
-импортируется лениво внутри функций — базовый `uv sync` не ломается.
+базовый uv sync, но импортируются лениво внутри функций — браузер
+устанавливается командой `patchright install chromium`.
 
 Этапы: авторизация (auth) -> сохранение storage_state -> сбор первой
 страницы выдачи по ключевым словам из keywords.txt.
@@ -33,7 +33,7 @@ def authorize(storage_state: Path | None = None, *, headless: bool = False) -> P
     Открывает браузер, пользователь входит вручную, после входа нажимает
     Enter в терминале — cookies и localStorage сохраняются в storage_state.
     """
-    from patchright.sync_api import sync_playwright  # lazy import (extra "resumes")
+    from patchright.sync_api import sync_playwright  # lazy import (в базовом uv sync)
 
     settings = get_settings()
     target = storage_state or settings.hh_storage_state
@@ -68,7 +68,7 @@ def collect(
     (движение мыши, скроллы) — F-3.8.
     TODO(F-3.7): ротация резидентских прокси через `proxy`.
     """
-    from patchright.sync_api import sync_playwright  # lazy import (extra "resumes")
+    from patchright.sync_api import sync_playwright  # lazy import (в базовом uv sync)
 
     settings = get_settings()
     store = JsonlDedupStore(settings.most_cv_output, key_field="resume_id")

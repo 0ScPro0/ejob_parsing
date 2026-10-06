@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import orjson
+from loguru import logger
 
 __all__ = ["JsonlDedupStore", "append_jsonl", "ensure_dir", "iter_jsonl"]
 
@@ -29,14 +30,36 @@ def append_jsonl(path: Path, item: dict[str, Any]) -> None:
 
 
 def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
-    """Построчно читает .jsonl-файл (пропускает пустые строки)."""
+    """Читает .jsonl-файл, допуская многострочные записи и битые фрагменты.
+
+    Записи могут быть как однострочными (стандартный JSON Lines), так и
+    pretty-printed (по несколько строк). Незакрытые/повреждённые фрагменты
+    пропускаются с предупреждением — файл не должен валить весь пайплайн.
+    """
     if not path.exists():
         return
+    buffer: list[str] = []
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
-            line = line.strip()
-            if line:
-                yield orjson.loads(line)
+            stripped = line.strip()
+            if not stripped:
+                continue
+            buffer.append(stripped)
+            candidate = "".join(buffer)
+            try:
+                item = orjson.loads(candidate)
+            except orjson.JSONDecodeError:
+                # Пришло начало новой записи, а буфер так и не собрался — старый фрагмент битый
+                if stripped.startswith("{") and len(buffer) > 1:
+                    logger.warning("Пропускаю повреждённый фрагмент в {}", path)
+                    buffer = [stripped]
+                continue
+            buffer = []
+            yield item
+    if buffer:
+        logger.warning(
+            "Пропускаю незакрытый хвост файла {} ({} строк)", path, len(buffer)
+        )
 
 
 class JsonlDedupStore:
@@ -62,6 +85,10 @@ class JsonlDedupStore:
         append_jsonl(self.path, item)
         self._seen.add(key)
         return True
+
+    def __contains__(self, key: object) -> bool:
+        """Позволяет проверять `key in store` без записи."""
+        return str(key) in self._seen
 
     @property
     def size(self) -> int:

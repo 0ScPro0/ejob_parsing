@@ -41,3 +41,17 @@ def test_store_sees_existing_keys_on_restart(tmp_path: Path) -> None:
     assert not second.add({"vacancyId": "1", "name": "A"})  # ключ известен из файла
     assert second.add({"vacancyId": "2", "name": "B"})
     assert second.size == 2
+
+
+def test_iter_jsonl_tolerates_pretty_and_broken_records(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.jsonl"
+    path.write_text(
+        '{"a": 1}\n'
+        '{\n    "b": 2\n}\n'
+        "совсем не json\n"
+        '{\n    "c": 3\n}\n'
+        "{broken\n",
+        encoding="utf-8",
+    )
+    items = list(iter_jsonl(path))
+    assert items == [{"a": 1}, {"b": 2}, {"c": 3}]

@@ -56,3 +56,9 @@ exports/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ── OUT ─────────────────────────────────────────────────────
+/out/
+/vacancies/
+/most_cv/
+/keywords.txt

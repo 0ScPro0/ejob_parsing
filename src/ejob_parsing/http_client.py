@@ -12,6 +12,7 @@ from typing import Any
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests import Response, Session
+from curl_cffi.requests.errors import RequestsError
 from loguru import logger
 from tenacity import (
     retry,
@@ -37,6 +38,10 @@ class RetryableHttpError(RuntimeError):
     """Ошибка, после которой стоит повторить запрос (403/429/5xx/сеть)."""
 
 
+class NonRetryableHttpError(RuntimeError):
+    """HTTP-ошибка, которую повторять не нужно (400/404/410 и т.п.)."""
+
+
 class HttpClient:
     """Сессия curl_cffi с ретраями и человекоподобными паузами."""
 
@@ -55,12 +60,19 @@ class HttpClient:
                 "https": self.settings.proxy_url,
             }
         # Декорируем _get ретраями с настройками из .env (tenacity).
+        # Ретраим 403/429/5xx (RetryableHttpError) и сетевые сбои curl_cffi
+        # (например, curl: (16) HTTP/2 stream error — сервер рвёт соединение).
         self.get = retry(
             stop=stop_after_attempt(self.settings.retry_attempts),
             wait=wait_exponential(
                 multiplier=self.settings.retry_wait_seconds, min=1, max=60
             ),
-            retry=retry_if_exception_type(RetryableHttpError),
+            retry=retry_if_exception_type((RetryableHttpError, RequestsError)),
+            before_sleep=lambda state: logger.warning(
+                "Повторяю запрос (попытка {} из {})...",
+                state.attempt_number + 1,
+                self.settings.retry_attempts,
+            ),
             reraise=True,
         )(self._get)
 
@@ -84,7 +96,9 @@ class HttpClient:
         logger.debug("GET {} -> {}", url, resp.status_code)
         if resp.status_code in RETRYABLE_STATUS:
             raise RetryableHttpError(f"HTTP {resp.status_code} for {url}")
-        resp.raise_for_status()  # type: ignore[no-untyped-call]  # curl_cffi без стабов
+        if resp.status_code >= 400:
+            # Не ретраим: 400/404/410 и т.п. вернут одно и то же
+            raise NonRetryableHttpError(f"HTTP {resp.status_code} for {url}")
         return resp
 
     @staticmethod

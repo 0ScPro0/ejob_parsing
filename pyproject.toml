@@ -7,6 +7,7 @@ authors = [
     { name = "ScPro", email = "muhamadievbogdan@gmail.com" }
 ]
 requires-python = ">=3.13"
+# Все зависимости проекта устанавливаются одним uv sync (без разделения на extras).
 dependencies = [
     # --- MVP-стек (раздел 2.6 ТЗ) ---
     "curl-cffi>=0.16.3",        # HTTP-клиент с имитацией TLS Chrome (R-1)
@@ -20,17 +21,13 @@ dependencies = [
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "tenacity>=9.0.0",          # ретраи при сетевых ошибках (F-1.8)
-    "fake-useragent>=2.0.0",    # ротация User-Agent (опционально)
-]
-
-[project.optional-dependencies]
-# Модуль резюме (этап 4): стелс-браузер. Не входит в базовый uv sync.
-resumes = [
+    "fake-useragent>=2.0.0",    # ротация User-Agent
+    # --- ИИ-аналитика ключевых слов (модуль 2) ---
+    "openai>=1.55.0",
+    # --- Модуль резюме (модуль 3): стелс-браузер ---
     "playwright>=1.50.0",
     "patchright>=1.50.0",
-]
-# Разработка и качество (NF-3..NF-7)
-dev = [
+    # --- Разработка и качество (NF-3..NF-7) ---
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "respx>=0.21.1",            # моки HTTP для тестов
@@ -71,6 +68,7 @@ module = [
     "fake_useragent.*",
     "playwright.*",
     "patchright.*",
+    "openai.*",
 ]
 ignore_missing_imports = true
 

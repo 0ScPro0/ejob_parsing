@@ -14,10 +14,12 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
-from ejob_parsing.config import get_settings
+from ejob_parsing.config import Settings, get_settings
+from ejob_parsing.exceptions import AIGenerationError
 from ejob_parsing.storage import iter_jsonl
 
 PUNCT_RE = re.compile(r"[^\w\s-]+", re.UNICODE)
@@ -327,16 +329,34 @@ def format_keywords(
         yield f"{' '.join(gram)}: {count}"
 
 
+def _write_terms(path: Path, terms: list[tuple[str, int]]) -> None:
+    """Пишет список (термин, частота) в keywords.txt в формате 7.2 ТЗ."""
+    lines = [f"{term}: {count}" for term, count in terms]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
 # ── Запуск модуля ───────────────────────────────────────────────────────
 
 
-def run(min_frequency: int | None = None, *, top: int | None = None) -> Path:
-    """Читает вакансии, считает термины и пишет keywords.txt (F-2.1..F-2.9)."""
+def run(
+    min_frequency: int | None = None,
+    *,
+    top: int | None = None,
+    use_ai: bool | None = None,
+) -> Path:
+    """Читает уже собранные вакансии (без сети!) и пишет keywords.txt
+    (частотный анализ, F-2.1..F-2.9). Если включена ИИ-аналитика (и задан
+    OPENAI_API_KEY) — дополнительно генерируется сводка по вакансиям со
+    ссылками и примерами сопроводительных писем в ai_analytics.txt.
+    """
     settings = get_settings()
+    vacancies = list(iter_jsonl(settings.vacancies_output))
     texts = list(load_vacancy_texts(settings.vacancies_output))
-    logger.info("Загружено текстов из вакансий: {}", len(texts))
-    if not texts:
-        logger.warning("Вакансий нет — сначала выполните: ejob-parsing parse vacancies")
+    logger.info("Загружено вакансий: {}", len(vacancies))
+    if not vacancies:
+        logger.warning(
+            "Вакансий нет — сначала соберите данные: ejob-parsing parse vacancies"
+        )
 
     counter: Counter[tuple[str, ...]] = Counter()
     for text in texts:
@@ -348,13 +368,62 @@ def run(min_frequency: int | None = None, *, top: int | None = None) -> Path:
     filtered = Counter(
         {gram: count for gram, count in counter.items() if count >= threshold}
     )
-
     out = settings.keywords_output
-    out.write_text(
-        "\n".join(format_keywords(filtered, top=top or settings.top_keywords)) + "\n",
-        encoding="utf-8",
-    )
+    _write_terms(out, list(format_terms(filtered, top=top or settings.top_keywords)))
     logger.success(
         "Сохранено {} терминов (порог >= {}) в {}", len(filtered), threshold, out
     )
+
+    if use_ai if use_ai is not None else settings.ai_analytics_enabled:
+        if settings.openai_api_key:
+            _run_ai_analytics(settings, vacancies)
+        else:
+            logger.warning(
+                "OPENAI_API_KEY не задан — пропускаю ИИ-аналитику "
+                "(ai_analytics.txt не создаётся)"
+            )
     return out
+
+
+def _run_ai_analytics(
+    settings: Settings, vacancies: list[dict[str, Any]]
+) -> Path | None:
+    """Генерирует сводку по вакансиям и сохраняет в ai_analytics.txt.
+
+    Ошибки -> None: keywords.txt уже записан, пайплайн не ломается.
+    """
+    try:
+        from ejob_parsing.ai import OpenAIClient, analyze_vacancies
+
+        client = OpenAIClient(settings)
+        logger.info(
+            "Запускаю ИИ-аналитику (модель {}) по {} вакансиям...",
+            client.model,
+            len(vacancies),
+        )
+        text = analyze_vacancies(client, vacancies)
+        out = settings.ai_analytics_output
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            text + ("\n" if text and not text.endswith("\n") else ""),
+            encoding="utf-8",
+        )
+        logger.success("ИИ-аналитика сохранена в {}", out)
+        return out
+
+    except AIGenerationError as e:
+        logger.warning(
+            f"Ошибка при генерации ответа ({type(e)}: {e}). Использую обычный анализ."
+        )
+    except Exception as e:
+        logger.warning(
+            f"ИИ-аналитика недоступна ({type(e)}: {e}). Использую обычный анализ."
+        )
+    return None
+
+
+def format_terms(
+    counter: Counter[tuple[str, ...]], *, top: int | None = None
+) -> list[tuple[str, int]]:
+    """Пары (термин, частота) из счётчика n-грамм, отсортированные по убыванию."""
+    return [(" ".join(gram), count) for gram, count in counter.most_common(top)]

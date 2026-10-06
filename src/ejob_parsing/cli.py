@@ -53,11 +53,21 @@ def parse_vacancies(
             "--max-pages", help="Лимит страниц (по умолчанию MAX_PAGES из .env)"
         ),
     ] = None,
+    workers: Annotated[
+        int | None,
+        typer.Option(
+            "--workers",
+            help=(
+                "Сколько HTTP-клиентов работают параллельно "
+                "(по умолчанию PARSE_WORKERS из .env)"
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Собрать вакансии hh.ru по настройкам из .env (модуль 1)."""
     from ejob_parsing.parsers.vacancies import run as run_vacancies
 
-    run_vacancies(max_pages=max_pages)
+    run_vacancies(max_pages=max_pages, workers=workers)
 
 
 @parse.command("keywords")
@@ -73,11 +83,22 @@ def parse_keywords(
         int | None,
         typer.Option("--top", help="Сколько терминов записать в keywords.txt"),
     ] = None,
+    ai: Annotated[
+        bool | None,
+        typer.Option(
+            "--ai/--no-ai",
+            help=(
+                "ИИ-аналитика (сводка по вакансиям в ai_analytics.txt; "
+                "по умолчанию AI_ANALYTICS_ENABLED из .env)"
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Извлечь ключевые слова из собранных вакансий (модуль 2)."""
+    """Извлечь ключевые слова (keywords.txt) и, если включено, ИИ-сводку
+    по вакансиям со ссылками и сопроводительными письмами (ai_analytics.txt)."""
     from ejob_parsing.parsers.keywords import run as run_keywords
 
-    run_keywords(min_frequency, top=top)
+    run_keywords(min_frequency, top=top, use_ai=ai)
 
 
 @parse.command("resumes")
@@ -107,8 +128,8 @@ def parse_resumes(
 @parse.command("all")
 def parse_all() -> None:
     """Последовательно: вакансии -> ключевые слова -> резюме."""
-    parse_vacancies(max_pages=None)
-    parse_keywords(min_frequency=None, top=None)
+    parse_vacancies(max_pages=None, workers=None)
+    parse_keywords(min_frequency=None, top=None, ai=None)
     parse_resumes(keywords_file=Path("keywords.txt"), top=None)
 
 
