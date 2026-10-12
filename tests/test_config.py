@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ejob_parsing.config import ExperienceLevel, _parse_list
+from ejob_parsing.config import _parse_list
 from tests._settings import make_settings
 
 
@@ -23,9 +23,10 @@ def test_settings_defaults_from_spec() -> None:
     settings = make_settings()
     # раздел 1 ТЗ: уровень, опыт, направления, технологии
     assert settings.search_levels == ["middle", "senior"]
-    assert settings.search_experience == ExperienceLevel.BETWEEN_3_AND_6
+    assert settings.search_experience == ["between3And6"]
     assert settings.search_directions == ["fullstack", "web"]
     assert settings.search_technologies == ["python", "go", "js", "ai"]
+    assert settings.search_work_formats == []  # пусто = все форматы
     # раздел 11 ТЗ
     assert settings.max_pages == 40
     assert settings.min_keyword_freq == 5

@@ -11,14 +11,6 @@ JobPosting). Поэтому поток такой:
 3. Проверяем «подходит ли» по ключевым словам (match_keywords).
 4. Дедупликация по vacancyId и дописывание в vacancies.jsonl.
 
-Каждая вакансия хранит searchQuery/searchPage — запрос и номер страницы
-выдачи, на которых она найдена. Параллельно ведётся файл прогресса
-(<output>.progress.json): последняя запрошенная страница по каждому
-запросу, даже если с неё ничего не сохранилось (дубли/фильтр). При
-повторном запуске пагинация начинается с последней обработанной страницы:
-уже пройденные страницы не перезапрашиваются. Полный пересбор — удалить
-vacancies/*.jsonl и файл прогресса рядом.
-
 Параллельность (parse_workers, PARSE_WORKERS): фаза 1 — поисковые запросы
 выполняются одновременно (по HttpClient на запрос), фаза 2 — страницы
 вакансий разбираются пулом воркеров. Сохранение — только из главного потока
@@ -41,7 +33,7 @@ from selectolax.lexbor import LexborHTMLParser
 from ejob_parsing.config import Settings, get_settings
 from ejob_parsing.http_client import HttpClient
 from ejob_parsing.models import Area, Employer, Salary, Vacancy
-from ejob_parsing.storage import JsonlDedupStore, iter_jsonl
+from ejob_parsing.storage import JsonlDedupStore
 
 SEARCH_URL = "https://hh.ru/search/vacancy"
 BASE_URL = "https://hh.ru"
@@ -64,24 +56,35 @@ NUMBER_RE = re.compile(r"\d[\d ]*")
 
 
 def build_search_queries(settings: Settings | None = None) -> list[dict[str, str]]:
-    """Генерирует поисковые запросы: уровень x направление x технология.
+    """Генерирует поисковые запросы: уровень x направление x опыт x технология.
 
-    Каждая технология уходит отдельным запросом (вместо одного запроса со
-    всеми сразу) — так выборка вакансий существенно шире (R-2). Пример:
-    {"text": "middle fullstack python", "experience": "between3And6"}.
+    Каждая технология, опыт и формат работы уходят отдельным запросом (вместо
+    одного запроса со всеми сразу) — так выборка вакансий существенно шире
+    (R-2). Формат работы попадает прямо в критерий поиска (work_format),
+    поэтому hh.ru не отдаёт вакансии других форматов — лишние страницы не
+    парсятся. Пример: {"text": "middle fullstack python",
+    "experience": "between3And6", "work_format": "REMOTE"}.
     """
     s = settings or get_settings()
+    formats: list[str | None] = [
+        fmt.upper() for fmt in s.search_work_formats if fmt.strip()
+    ]
+    if not formats:
+        formats = [None]  # без настроенных форматов — один запрос без work_format
     queries: list[dict[str, str]] = []
-    for level, direction in product(s.search_levels, s.search_directions):
+    for level, direction, experience, work_format in product(
+        s.search_levels, s.search_directions, s.search_experience, formats
+    ):
+        query: dict[str, str] = {"experience": experience}
+        if work_format:
+            query["work_format"] = work_format
         base = [level, direction]
         if s.search_technologies:
             for tech in s.search_technologies:
                 text = " ".join(filter(None, [*base, tech]))
-                queries.append({"text": text, "experience": s.search_experience.value})
+                queries.append({**query, "text": text})
         else:
-            queries.append(
-                {"text": " ".join(base), "experience": s.search_experience.value}
-            )
+            queries.append({**query, "text": " ".join(base)})
     return queries
 
 
@@ -325,16 +328,16 @@ def matches_vacancy(
     keywords: list[str] | None = None,
     *,
     exclude_keywords: list[str] | None = None,
-    work_formats: list[str] | None = None,
 ) -> bool:
-    """Проверяет, подходит ли вакансия под все фильтры:
+    """Проверяет, подходит ли вакансия под фильтры:
 
     - `keywords` — хотя бы одно слово в name/description/keySkills (пусто = ок);
-    - `exclude_keywords` — НИ одного слова в тексте (негативные параметры);
-    - `work_formats` — хотя бы одно значение в schedule/name/description
-      (например, ["удаленн"] для «только удалёнки»).
+    - `exclude_keywords` — НИ одного слова в тексте (негативные параметры).
 
     Сравнение по подстроке, без учёта регистра, ё == е.
+    Формат работы на этом этапе не проверяется: он задаётся в критерии
+    поиска (`SEARCH_WORK_FORMATS` -> work_format), и hh.ru отдаёт только
+    подходящие вакансии.
     """
     haystack = _normalize_text(
         " ".join(
@@ -355,14 +358,9 @@ def matches_vacancy(
     ):
         return False
 
-    if keywords and not any(
+    return not keywords or any(
         _normalize_text(keyword) in haystack for keyword in keywords
-    ):
-        return False
-
-    if work_formats:
-        return any(_normalize_text(fmt) in haystack for fmt in work_formats)
-    return True
+    )
 
 
 # ── Основной цикл (F-1.2..F-1.8) ────────────────────────────────────────
@@ -373,46 +371,30 @@ def _collect_links(
     queries: list[dict[str, str]],
     pages_limit: int,
     workers: int,
-    start_pages: dict[str, int] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
+) -> list[dict[str, str]]:
     """Собирает ссылки на вакансии параллельно: по одному HttpClient на запрос.
 
     Каждый запрос обходит свои страницы последовательно и останавливается на
-    первой пустой странице. `start_pages` — последние обработанные страницы
-    по запросам (из прошлых запусков): страницы до них пропускаются, чтобы
-    не тратить запросы на одно и то же. Каждая ссылка дополняется полями
-    searchQuery (текст запроса) и searchPage (номер страницы) — они попадут
-    в .jsonl.
-
-    Второе значение результата — прогресс пагинации: для каждого запроса
-    номер последней ЗАПРОШЕННОЙ страницы (даже если с неё ничего не
-    сохранилось — дубли/фильтр). Без него «последняя страница» считалась бы
-    по сохранённым вакансиям, а со страниц-дублей ничего не сохраняется —
-    пропуск страниц переставал работать.
+    первой пустой странице. Результаты воркеров читаются в главном потоке
+    через as_completed, поэтому общий список не требует блокировок.
     """
-    links: list[dict[str, Any]] = []
-    progress: dict[str, int] = {}
-    start = start_pages or {}
+    links: list[dict[str, str]] = []
 
-    def crawl(query: dict[str, str]) -> tuple[str, list[dict[str, Any]], int]:
-        local: list[dict[str, Any]] = []
-        last_requested = 0
+    def crawl(query: dict[str, str]) -> list[dict[str, str]]:
+        local: list[dict[str, str]] = []
         client = HttpClient(settings)
         try:
             logger.info("Запрос: {}", query)
-            first_page = start.get(query["text"], 0)
-            if first_page:
-                logger.info("Начинаю со страницы {} (ранее обработана)", first_page)
-            for page in range(first_page, pages_limit):
-                # Фиксируем ДО запроса: даже при сетевом сбое следующая
-                # попытка начнётся с этой страницы, а не пропустит её.
-                last_requested = page
+            for page in range(pages_limit):
                 params: dict[str, Any] = {
                     "text": query["text"],
                     "experience": query["experience"],
                     "page": page,
                     "items_on_page": settings.items_per_page,
                 }
+                work_format = query.get("work_format")
+                if work_format:
+                    params["work_format"] = work_format
                 try:
                     response = client.get(SEARCH_URL, params=params)
                 except Exception as exc:
@@ -422,42 +404,30 @@ def _collect_links(
                 if not page_links:
                     logger.info("Страница {} пуста, завершаю пагинацию", page)
                     break
-                local.extend(
-                    {
-                        **page_link,
-                        "searchQuery": query["text"],
-                        "searchPage": page,
-                    }
-                    for page_link in page_links
-                )
+                local.extend(page_links)
         finally:
             client.close()
-        return query["text"], local, last_requested
+        return local
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="links") as pool:
         futures = [pool.submit(crawl, query) for query in queries]
         for future in as_completed(futures):
             try:
-                query_text, local, last_requested = future.result()
+                links.extend(future.result())
             except Exception as exc:
                 logger.warning("Поисковый запрос не выполнен: {}", exc)
-                continue
-            links.extend(local)
-            progress[query_text] = max(progress.get(query_text, -1), last_requested)
-    return links, progress
+    return links
 
 
 def _fetch_vacancy(
     settings: Settings,
-    link: dict[str, Any],
+    link: dict[str, str],
     keywords: list[str],
 ) -> tuple[str, dict[str, Any] | str]:
     """Загружает и разбирает одну вакансию; выполняется в воркере (фаза 2).
 
     Возвращает ("add", data) — вакансия прошла фильтры, можно сохранять;
     ("skip", "") — не прошла фильтры; ("error", msg) — сеть или парсинг.
-    В data попадают searchQuery/searchPage из ссылки: по ним следующий
-    запуск продолжит пагинацию с последней обработанной страницы.
     """
     vacancy_id = link["vacancyId"]
     client = HttpClient(settings)
@@ -473,56 +443,13 @@ def _fetch_vacancy(
     except Exception as exc:
         logger.warning("Не удалось разобрать вакансию {}: {}", vacancy_id, exc)
         return "error", str(exc)
-    vacancy.search_query = link.get("searchQuery")
-    vacancy.search_page = link.get("searchPage")
     if not matches_vacancy(
         vacancy,
         keywords,
         exclude_keywords=settings.vacancy_exclude_keywords,
-        work_formats=settings.vacancy_work_formats,
     ):
         return "skip", ""
     return "add", vacancy.model_dump(by_alias=True, exclude_none=True)
-
-
-def _last_pages(path: Path) -> dict[str, int]:
-    """Максимальная сохранённая страница выдачи по каждому поисковому запросу.
-
-    Читает записи vacancies/*.jsonl: для записей с searchQuery/searchPage
-    запоминает максимальный номер страницы. Это fallback для запусков без
-    файла прогресса (страницы, с которых не сохранилось ни одной вакансии,
-    здесь не видны).
-    """
-    pages: dict[str, int] = {}
-    for item in iter_jsonl(path):
-        query = item.get("searchQuery")
-        page = item.get("searchPage")
-        if isinstance(query, str) and isinstance(page, int):
-            pages[query] = max(pages.get(query, -1), page)
-    return pages
-
-
-def _progress_path(output: Path) -> Path:
-    """Путь к файлу прогресса пагинации (рядом с выходным .jsonl)."""
-    return output.with_name(output.name + ".progress.json")
-
-
-def _read_progress(path: Path) -> dict[str, int]:
-    """Читает файл прогресса: {текст запроса: последняя запрошенная страница}."""
-    if not path.exists():
-        return {}
-    try:
-        data = cast("dict[str, Any]", orjson.loads(path.read_bytes()))
-    except (orjson.JSONDecodeError, OSError):
-        return {}
-    return {key: value for key, value in data.items() if isinstance(value, int)}
-
-
-def _write_progress(path: Path, progress: dict[str, int]) -> None:
-    """Сохраняет прогресс пагинации. Пустой словарь не пишем."""
-    if not progress:
-        return
-    path.write_bytes(orjson.dumps(progress))
 
 
 def run(
@@ -537,8 +464,6 @@ def run(
     Фаза 1: ссылки со страниц поиска (воркер на поисковый запрос).
     Фаза 2: детали вакансий пулом воркеров; сохранение — в главном потоке
     (JsonlDedupStore не потокобезопасен), дубли исключаются до submit.
-    Каждая вакансия получает searchQuery/searchPage — по ним следующий
-    запуск продолжит пагинацию с последней обработанной страницы.
     """
     settings = get_settings()
     keywords = (
@@ -551,26 +476,8 @@ def run(
     pages_limit = max_pages or settings.max_pages
     worker_count = workers or settings.parse_workers
 
-    # Страницы, уже пройденные в прошлых запусках: с них и продолжим, чтобы
-    # не тратить запросы на одно и то же. Источники прогресса:
-    #   1) файл прогресса (фиксирует страницы даже без сохранённых вакансий);
-    #   2) метки searchPage в уже собранных .jsonl (fallback).
-    # Если выходного файла ещё нет — начинаем с нуля (полный пересбор).
-    last_pages: dict[str, int] = {}
-    if store.path.exists():
-        last_pages = _read_progress(_progress_path(store.path))
-        for query, page in _last_pages(store.path).items():
-            last_pages[query] = max(last_pages.get(query, -1), page)
-    if last_pages:
-        logger.info("Пропускаю уже пройденные страницы: {}", last_pages)
-
     queries = build_search_queries(settings)
-    links, new_progress = _collect_links(
-        settings, queries, pages_limit, worker_count, start_pages=last_pages
-    )
-    for query, page in new_progress.items():
-        last_pages[query] = max(last_pages.get(query, -1), page)
-    _write_progress(_progress_path(store.path), last_pages)
+    links = _collect_links(settings, queries, pages_limit, worker_count)
     logger.info("Собрано ссылок на вакансии: {}", len(links))
 
     pending: list[Future[tuple[str, dict[str, Any] | str]]] = []

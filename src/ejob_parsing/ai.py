@@ -152,7 +152,7 @@ class OpenAIClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            temperature=0.5,
+            # temperature=0.5,
         )
         return _normalize_content(response.choices[0].message.content)
 

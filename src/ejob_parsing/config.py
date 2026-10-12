@@ -20,7 +20,6 @@ os.environ directly (NF-9, NF-10).
 from __future__ import annotations
 
 import json
-from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
@@ -66,18 +65,6 @@ def _absolute_path(value: Any) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
-# ── Enums ───────────────────────────────────────────────────────────────
-
-
-class ExperienceLevel(StrEnum):
-    """Идентификаторы опыта, которые hh.ru принимает в query-параметре `experience`."""
-
-    NO_EXPERIENCE = "noExperience"
-    BETWEEN_1_AND_3 = "between1And3"
-    BETWEEN_3_AND_6 = "between3And6"
-    MORE_THAN_6 = "moreThan6"
-
-
 # ── Main settings ───────────────────────────────────────────────────────
 
 
@@ -103,7 +90,10 @@ class Settings(BaseSettings):
 
     # --- Поиск вакансий, модуль 1 (раздел 1 ТЗ) ---
     search_levels: ListOfStr = Field(default_factory=lambda: ["middle", "senior"])
-    search_experience: ExperienceLevel = ExperienceLevel.BETWEEN_3_AND_6
+    # Опыт — тоже список: SEARCH_EXPERIENCE=between1And3,between3And6.
+    # hh.ru принимает только одно значение experience за раз, поэтому парсер
+    # уходит отдельным запросом на каждое (R-2).
+    search_experience: ListOfStr = Field(default_factory=lambda: ["between3And6"])
     search_directions: ListOfStr = Field(default_factory=lambda: ["fullstack", "web"])
     search_technologies: ListOfStr = Field(
         default_factory=lambda: ["python", "go", "js", "ai"]
@@ -130,7 +120,7 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str | None = None  # для прокси/совместимых API
-    openai_timeout: float = 60.0
+    openai_timeout: float = 960.0
     # Переопределение системного промпта (дефолтный — в ai.py).
     # В .env многострочный текст можно записать с \n.
     openai_system_prompt: str | None = None
@@ -160,10 +150,12 @@ class Settings(BaseSettings):
     # Негативные параметры: вакансия скипается, если в её тексте встречается
     # любое из слов (например: qa, тестировщик). Регистр не важен.
     vacancy_exclude_keywords: ListOfStr = Field(default_factory=list)
-    # Требуемый формат работы: вакансия сохраняется, только если в тексте
-    # (schedule/описание/название) встречается хотя бы одно из значений.
-    # Пример для «только удалёнки»: ["удаленн", "remote"]. Пусто = без фильтра.
-    vacancy_work_formats: ListOfStr = Field(default_factory=list)
+    # Формат работы — критерий ПОИСКА (query-параметр work_format), а не
+    # пост-фильтр текста: hh.ru сразу отдаёт только такие вакансии, парсер
+    # не открывает страницы лишних. Значения (регистр не важен):
+    # FULL_DAY | SHIFT | FLEXIBLE | REMOTE | HYBRID. Каждый формат уходит
+    # отдельным запросом. Пусто = все форматы.
+    search_work_formats: ListOfStr = Field(default_factory=list)
 
     # --- Селекторы hh.ru (R-7: вёрстка может меняться — правим только здесь) ---
     # Список вакансий (search/vacancy)
