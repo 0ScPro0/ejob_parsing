@@ -165,7 +165,7 @@ n-граммы (1..3) → порог `MIN_KEYWORD_FREQ` → `keywords.txt` в ф
 (дефолтный — в [`src/ejob_parsing/ai.py`](src/ejob_parsing/ai.py),
 лимиты запроса: `AI_VACANCIES_LIMIT`, длина описания настраивается в конфиге).
 
-### Модуль 3 — [`src/ejob_parsing/parsers/resumes.py`](src/ejob_parsing/parsers/resumes.py)
+### Модуль 3 (beta) — [`src/ejob_parsing/parsers/resumes.py`](src/ejob_parsing/parsers/resumes.py)
 
 `authorize()` — первичный вход и сохранение `storage_state.json`.
 `collect()` — сбор первой страницы выдачи по ключам из `keywords.txt`.
